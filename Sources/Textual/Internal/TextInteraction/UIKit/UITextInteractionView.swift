@@ -28,6 +28,15 @@
     private(set) lazy var _tokenizer = UITextInputStringTokenizer(textInput: self)
     private let selectionInteraction: UITextInteraction
 
+    // Installed on the window while this view is first responder, so a tap anywhere
+    // outside the text dismisses the selection like it does in `UITextView`.
+    private lazy var outsideTapGesture: UITapGestureRecognizer = {
+      let gesture = UITapGestureRecognizer(target: self, action: #selector(handleOutsideTap(_:)))
+      gesture.cancelsTouchesInView = false
+      gesture.delegate = self
+      return gesture
+    }()
+
     init(
       model: TextSelectionModel,
       exclusionRects: [CGRect],
@@ -55,6 +64,23 @@
         }
       }
       return super.point(inside: point, with: event)
+    }
+
+    override func becomeFirstResponder() -> Bool {
+      let didBecome = super.becomeFirstResponder()
+      if didBecome, let window, outsideTapGesture.view !== window {
+        window.addGestureRecognizer(outsideTapGesture)
+      }
+      return didBecome
+    }
+
+    override func resignFirstResponder() -> Bool {
+      let didResign = super.resignFirstResponder()
+      if didResign {
+        outsideTapGesture.view?.removeGestureRecognizer(outsideTapGesture)
+        model.selectedRange = nil
+      }
+      return didResign
     }
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
@@ -110,9 +136,24 @@
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
       let location = gesture.location(in: self)
       guard let url = model.url(for: location) else {
+        model.selectedRange = nil
         return
       }
       openURL(url)
+    }
+
+    @objc private func handleOutsideTap(_ gesture: UITapGestureRecognizer) {
+      guard let window = gesture.view else { return }
+      let hitView = window.hitTest(gesture.location(in: window), with: nil)
+      if let hitView, hitView.isDescendant(of: self) {
+        // Taps on the text itself are handled by `handleTap` and `UITextInteraction`
+        return
+      }
+      // Deferred so an edit menu action (Copy, Share) runs before the selection goes away
+      DispatchQueue.main.async { [weak self] in
+        guard let self, self.isFirstResponder else { return }
+        _ = self.resignFirstResponder()
+      }
     }
 
     @objc private func share(_ sender: Any?) {
@@ -186,6 +227,16 @@
       }
 
       return viewController
+    }
+  }
+
+  extension UITextInteractionView: UIGestureRecognizerDelegate {
+    func gestureRecognizer(
+      _ gestureRecognizer: UIGestureRecognizer,
+      shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+      // Never compete with the buttons and gestures the outside tap lands on
+      gestureRecognizer === outsideTapGesture
     }
   }
 
